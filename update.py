@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-경쟁사 뉴스 자동 수집 스크립트
+경쟁사 뉴스 자동 수집 스크립트 v2 (Phase 1+2)
 - 네이버 검색 API로 30개 경쟁사 최신 뉴스 수집
+- 감성 분석 (긍정/부정/중립) 자동 분류
+- KPI 계산 (오늘/이번주/긍정·부정 비율/Top3 활발 업체)
+- 한글 매체명 매핑
 - template.html을 사용해 index.html 생성
-- GitHub Actions가 cron + 수동 트리거로 실행
 """
 import os
 import sys
@@ -12,6 +14,7 @@ import re
 import requests
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from collections import Counter
 
 CLIENT_ID = os.environ.get('NAVER_CLIENT_ID')
 CLIENT_SECRET = os.environ.get('NAVER_CLIENT_SECRET')
@@ -63,6 +66,68 @@ COMPANIES = {
     ],
 }
 
+# 한글 매체명 매핑 (도메인 → 한글명)
+SOURCE_NAMES = {
+    'chosun.com': '조선비즈', 'biz.chosun.com': '조선비즈',
+    'mt.co.kr': '머니투데이', 'etnews.com': '전자신문',
+    'mk.co.kr': '매일경제', 'hankyung.com': '한국경제',
+    'newsis.com': '뉴시스', 'yna.co.kr': '연합뉴스', 'yonhapnews.co.kr': '연합뉴스',
+    'zdnet.co.kr': 'ZDNet Korea', 'thebell.co.kr': '더벨',
+    'ebn.co.kr': 'EBN', 'venturesquare.net': '벤처스퀘어',
+    'aitimes.com': 'AI타임스', 'fntimes.com': '한국금융신문',
+    'ajunews.com': '아주경제', 'bloter.net': '블로터',
+    'dt.co.kr': '디지털타임스', 'edaily.co.kr': '이데일리',
+    'sedaily.com': '서울경제', 'etoday.co.kr': '이투데이',
+    'fnnews.com': '파이낸셜뉴스', 'wowtale.net': '와우테일',
+    'sbsbiz.co.kr': 'SBS Biz', 'koit.co.kr': '정보통신신문',
+    'sentv.co.kr': '센텐스TV', 'startupn.kr': '스타트업N',
+    'platum.kr': '플래텀', 'asiae.co.kr': '아시아경제',
+    'newdaily.co.kr': '뉴데일리', 'munhwa.com': '문화일보',
+    'hani.co.kr': '한겨레', 'donga.com': '동아일보',
+    'joongang.co.kr': '중앙일보', 'kmib.co.kr': '국민일보',
+    'segye.com': '세계일보', 'seoul.co.kr': '서울신문',
+    'ohmynews.com': '오마이뉴스', 'kbs.co.kr': 'KBS',
+    'mbc.co.kr': 'MBC', 'sbs.co.kr': 'SBS',
+    'ytn.co.kr': 'YTN', 'mbn.co.kr': 'MBN',
+    'jtbc.joins.com': 'JTBC', 'naver.com': '네이버',
+    'daum.net': '다음', 'dailian.co.kr': '데일리안',
+    'newspim.com': '뉴스핌', 'topdaily.kr': '토픽데일리',
+    'finance-scope.com': 'Finance Scope',
+    'businesspost.co.kr': '비즈니스포스트',
+    'inicis.com': '이니시스 블로그',
+    'asiaa.co.kr': '아시아에이', 'newstap.co.kr': '뉴스탭',
+    'sommeliertimes.com': '소믈리에타임즈',
+    'theindigo.co.kr': '더인디고',
+    'thelec.kr': '디일렉', 'kgnews.co.kr': '경기신문',
+    'inews24.com': '아이뉴스24', 'metroseoul.co.kr': '메트로신문',
+    'apnews.kr': 'AP신문', 'getnews.co.kr': 'getnews',
+    'moneys.co.kr': '머니S', 'businesskorea.co.kr': 'BusinessKorea',
+    'mediapen.com': '미디어펜', 'g-enews.com': '글로벌이코노믹',
+    'asiatime.co.kr': '아시아타임즈', 'asiatoday.co.kr': '아시아투데이',
+    'ddaily.co.kr': '디지털데일리', 'enewstoday.co.kr': '이뉴스투데이',
+    'getnews.co.kr': 'GetNews', 'newsworker.co.kr': '뉴스워커',
+    'epnc.co.kr': 'EP&C', 'ekoreanews.co.kr': 'eKoreaNews',
+    'sportsworldi.com': '스포츠월드', 'sportsseoul.com': '스포츠서울',
+    'sportskhan.news': '스포츠경향', 'sports.khan.co.kr': '스포츠경향',
+    'kpinews.kr': 'KPI뉴스', 'reportera.co.kr': '리포터라',
+    'pressian.com': '프레시안', 'koreatimes.co.kr': '코리아타임스',
+    'koreaherald.com': '코리아헤럴드',
+}
+
+# 감성 분석 키워드
+POSITIVE_KEYWORDS = [
+    '흑자', '영업이익', '신기록', '1위', '투자유치', '투자 유치', '유니콘',
+    '진출', '확장', '성장', '호조', '호평', '우수', '수상', '협업', '제휴',
+    '돌파', '달성', '체결', '런칭', '오픈', '출시', '신제품', '신규', '확대',
+    '강화', '도약', '선정', '선두', '최대', '최고', '역대', '신용등급', '상장'
+]
+NEGATIVE_KEYWORDS = [
+    '적자', '손실', '부진', '위기', '규제', '처벌', '과태료', '고소', '수사',
+    '갈등', '논란', '패소', '하락', '폭락', '중단', '폐쇄', '사퇴', '해고',
+    '탈취', '침해', '취소', '연기', '실패', '감소', '경고', '리콜', '비판',
+    '항의', '시위', '제재', '적발', '의혹', '사고', '사망', '부도'
+]
+
 TYPE_KEYWORDS = {
     "실적": ["흑자", "매출", "영업이익", "분기 실적", "당기순이익", "성장세"],
     "투자": ["투자 유치", "투자유치", "시리즈", "유치한", "기업가치", "유니콘", "라운드"],
@@ -80,6 +145,16 @@ def classify_news(title, summary):
                 return type_name
     return "뉴스"
 
+def analyze_sentiment(title, summary):
+    text = title + " " + summary
+    pos_count = sum(1 for kw in POSITIVE_KEYWORDS if kw in text)
+    neg_count = sum(1 for kw in NEGATIVE_KEYWORDS if kw in text)
+    if pos_count > neg_count:
+        return "positive"
+    elif neg_count > pos_count:
+        return "negative"
+    return "neutral"
+
 def clean_html_text(text):
     if not text:
         return ""
@@ -93,7 +168,7 @@ def clean_html_text(text):
                 .replace('&nbsp;', ' '))
     return text.strip()
 
-def fetch_news(query, display=5):
+def fetch_news(query, display=8):
     url = "https://openapi.naver.com/v1/search/news.json"
     headers = {
         "X-Naver-Client-Id": CLIENT_ID,
@@ -115,11 +190,21 @@ def parse_pubdate(pubdate_str):
     except Exception:
         return ""
 
-def get_source_from_url(url):
+def get_source_name(url):
     if not url:
         return ""
     m = re.match(r'https?://(?:www\.|m\.)?([^/]+)', url)
-    return m.group(1) if m else ""
+    if not m:
+        return ""
+    domain = m.group(1)
+    if domain in SOURCE_NAMES:
+        return SOURCE_NAMES[domain]
+    parts = domain.split('.')
+    if len(parts) > 2:
+        main_domain = '.'.join(parts[-2:])
+        if main_domain in SOURCE_NAMES:
+            return SOURCE_NAMES[main_domain]
+    return domain
 
 def collect_all_news(days=14):
     cutoff = datetime.now(KST) - timedelta(days=days)
@@ -140,18 +225,53 @@ def collect_all_news(days=14):
                 title = clean_html_text(item.get('title', ''))
                 summary = clean_html_text(item.get('description', ''))
                 url = item.get('originallink') or item.get('link', '')
+                sentiment = analyze_sentiment(title, summary)
                 filtered.append({
                     "title": title,
                     "summary": summary[:200],
-                    "source": get_source_from_url(url),
+                    "source": get_source_name(url),
                     "url": url,
                     "date": parse_pubdate(pub_dt_str),
+                    "sentiment": sentiment,
                 })
             news_data[c['name']] = filtered
             print(f"  {c['name']}: {len(filtered)}건")
     return news_data
 
-def generate_highlights(news_data, max_items=5):
+def compute_kpis(news_data):
+    today_str = datetime.now(KST).strftime("%Y-%m-%d")
+    week_cutoff = (datetime.now(KST) - timedelta(days=7)).strftime("%Y-%m-%d")
+    total_today = total_week = total_all = 0
+    pos_count = neg_count = neutral_count = 0
+    company_counts = Counter()
+    for company, items in news_data.items():
+        company_counts[company] = len(items)
+        for item in items:
+            total_all += 1
+            s = item.get("sentiment")
+            if s == "positive":
+                pos_count += 1
+            elif s == "negative":
+                neg_count += 1
+            else:
+                neutral_count += 1
+            d = item.get("date", "")
+            if d == today_str:
+                total_today += 1
+            if d >= week_cutoff:
+                total_week += 1
+    top_companies = [{"name": n, "count": c} for n, c in company_counts.most_common(3) if c > 0]
+    return {
+        "total_all": total_all,
+        "total_today": total_today,
+        "total_week": total_week,
+        "positive": pos_count,
+        "negative": neg_count,
+        "neutral": neutral_count,
+        "top_companies": top_companies,
+    }
+
+def generate_highlights(news_data, max_items=6):
     all_news = []
     for company, items in news_data.items():
         if items:
@@ -161,6 +281,9 @@ def generate_highlights(news_data, max_items=5):
                 "title": top["title"],
                 "summary": top["summary"][:150],
                 "type": classify_news(top["title"], top["summary"]),
+                "url": top["url"],
+                "source": top["source"],
+                "sentiment": top["sentiment"],
                 "_date": top["date"],
             })
     all_news.sort(key=lambda x: x.get("_date", ""), reverse=True)
@@ -177,37 +300,36 @@ def generate_companies_meta():
         } for c in companies]
     return out
 
-def render_html(news_data, highlights, last_updated):
+def render_html(news_data, highlights, kpis, last_updated, last_updated_iso):
     with open('template.html', 'r', encoding='utf-8') as f:
         template = f.read()
-    template = template.replace(
-        '/*__NEWS_DATA__*/',
-        'const NEWS_DATA = ' + json.dumps(news_data, ensure_ascii=False) + ';'
-    )
-    template = template.replace(
-        '/*__HIGHLIGHTS__*/',
-        'const HIGHLIGHTS = ' + json.dumps(highlights, ensure_ascii=False) + ';'
-    )
-    template = template.replace(
-        '/*__LAST_UPDATED__*/',
-        'const LAST_UPDATED = ' + json.dumps(last_updated, ensure_ascii=False) + ';'
-    )
-    template = template.replace(
-        '/*__COMPANIES__*/',
-        'const COMPANIES = ' + json.dumps(generate_companies_meta(), ensure_ascii=False) + ';'
-    )
+    template = template.replace('/*__NEWS_DATA__*/',
+        'const NEWS_DATA = ' + json.dumps(news_data, ensure_ascii=False) + ';')
+    template = template.replace('/*__HIGHLIGHTS__*/',
+        'const HIGHLIGHTS = ' + json.dumps(highlights, ensure_ascii=False) + ';')
+    template = template.replace('/*__KPIS__*/',
+        'const KPIS = ' + json.dumps(kpis, ensure_ascii=False) + ';')
+    template = template.replace('/*__LAST_UPDATED__*/',
+        'const LAST_UPDATED = ' + json.dumps(last_updated, ensure_ascii=False) + ';')
+    template = template.replace('/*__LAST_UPDATED_ISO__*/',
+        'const LAST_UPDATED_ISO = ' + json.dumps(last_updated_iso, ensure_ascii=False) + ';')
+    template = template.replace('/*__COMPANIES__*/',
+        'const COMPANIES = ' + json.dumps(generate_companies_meta(), ensure_ascii=False) + ';')
     with open('index.html', 'w', encoding='utf-8') as f:
         f.write(template)
     print(f"\n[OK] index.html 생성 완료 ({last_updated})")
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("경쟁사 뉴스 수집 시작")
+    print("경쟁사 뉴스 수집 시작 (v2 - Phase 1+2)")
     print("=" * 60)
     news_data = collect_all_news(days=14)
     highlights = generate_highlights(news_data)
-    last_updated = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
-    total_news = sum(len(v) for v in news_data.values())
-    print(f"\n총 수집 뉴스: {total_news}건")
+    kpis = compute_kpis(news_data)
+    now_kst = datetime.now(KST)
+    last_updated = now_kst.strftime("%Y-%m-%d %H:%M KST")
+    last_updated_iso = now_kst.isoformat()
+    print(f"\n총: {kpis['total_all']}건 | 오늘: {kpis['total_today']} | 이번주: {kpis['total_week']}")
+    print(f"감성: 긍정 {kpis['positive']} | 부정 {kpis['negative']} | 중립 {kpis['neutral']}")
     print(f"하이라이트: {len(highlights)}건")
-    render_html(news_data, highlights, last_updated)
+    render_html(news_data, highlights, kpis, last_updated, last_updated_iso)
