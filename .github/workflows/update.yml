@@ -1,0 +1,44 @@
+name: Update Competitor News
+
+on:
+  schedule:
+    # 한국 시간(KST = UTC+9) 기준 매일 6회 자동 실행
+    # 09:00 KST(00 UTC), 11:00(02), 13:00(04), 15:00(06), 17:00(08), 19:00(10)
+    - cron: '0 0,2,4,6,8,10 * * *'
+  workflow_dispatch:  # 수동 트리거 (Actions 탭의 "Run workflow" 버튼)
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch news and generate HTML
+        env:
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+        run: python update.py
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          if git diff --cached --quiet; then
+            echo "변경사항 없음 - commit 생략"
+          else
+            git commit -m "Auto-update news: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')"
+            git push
+          fi
