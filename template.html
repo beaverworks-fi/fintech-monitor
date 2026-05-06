@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>경쟁사 뉴스 모니터링 — 비버웍스 경영관리본부</title>
 <style>
 :root {
@@ -311,7 +314,7 @@ a { color: inherit; text-decoration: none; }
 </div>
 
 <footer class="footer">
-  매일 09/11/13/15/17/19시 자동 갱신 · 데이터: 네이버 뉴스 검색 API · 비버웍스 경영관리본부
+  평일 KST 09~19시 매시간 자동 갱신 · 화면도 10분마다 새 뉴스 자동 반영 · 데이터: 네이버 뉴스 검색 API · 비버웍스 경영관리본부
 </footer>
 
 <script>
@@ -565,15 +568,85 @@ function renderContent() {
   document.getElementById('filterStats').textContent = `${filtered.length}개 업체 · ${totalShown}건`;
 }
 
+// ========== Auto-update polling (no manual refresh needed) ==========
+// 10분마다 같은 페이지를 fetch해서 LAST_UPDATED_ISO가 바뀌면
+// 데이터(NEWS_DATA / HIGHLIGHTS / KPIS / LAST_UPDATED)만 갱신하고 DOM 부분 재렌더링.
+// 페이지 통째 reload가 아니므로 스크롤 위치/필터/검색 입력 모두 유지됨.
+function _extractJsConst(html, key) {
+  // 'let KEY = <JSON>;' 또는 'const KEY = <JSON>;' 모두 매치
+  // [\s\S]*? 비탐욕 매칭, 끝의 세미콜론 직전까지
+  const re = new RegExp("(?:let|const)\\s+" + key + "\\s*=\\s*([\\s\\S]*?)\\s*;\\s*\\n");
+  const m = html.match(re);
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch(e) { return null; }
+}
+function _extractStringConst(html, key) {
+  const re = new RegExp("(?:let|const)\\s+" + key + "\\s*=\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
+  const m = html.match(re);
+  return m ? m[1] : null;
+}
+function showUpdateToast(text) {
+  let t = document.getElementById('updateToast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'updateToast';
+    t.style.cssText = 'position:fixed;bottom:24px;right:24px;padding:12px 18px;background:#1F4E79;color:#fff;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.2);font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:opacity 0.3s;pointer-events:none;';
+    document.body.appendChild(t);
+  }
+  t.textContent = text;
+  t.style.opacity = '1';
+  clearTimeout(t._tm);
+  t._tm = setTimeout(() => { t.style.opacity = '0'; }, 6000);
+}
+async function checkForUpdates() {
+  try {
+    const url = window.location.pathname + '?_=' + Date.now();
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) return;
+    const html = await res.text();
+    const newIso = _extractStringConst(html, 'LAST_UPDATED_ISO');
+    if (!newIso || newIso === LAST_UPDATED_ISO) return; // 변경 없음
+    const newNews = _extractJsConst(html, 'NEWS_DATA');
+    const newHL = _extractJsConst(html, 'HIGHLIGHTS');
+    const newKpis = _extractJsConst(html, 'KPIS');
+    const newLU = _extractStringConst(html, 'LAST_UPDATED');
+    if (!newNews || !newHL || !newKpis || !newLU) {
+      console.warn('자동 갱신: 새 데이터 파싱 실패 — 다음 주기 재시도');
+      return;
+    }
+    NEWS_DATA = newNews;
+    HIGHLIGHTS = newHL;
+    KPIS = newKpis;
+    LAST_UPDATED = newLU;
+    LAST_UPDATED_ISO = newIso;
+    renderHeaderTime();
+    renderKpis();
+    renderHighlights();
+    renderContent();
+    showUpdateToast('✨ 새 뉴스 적용됨 · ' + LAST_UPDATED);
+  } catch(e) {
+    console.warn('자동 갱신 실패(무시):', e);
+  }
+}
+
 // ========== Init ==========
 renderHeaderTime();
-setInterval(renderHeaderTime, 60000); // 1분마다 갱신
+setInterval(renderHeaderTime, 60000); // 1분마다 헤더 상대시각 갱신
 renderKpis();
 renderHighlights();
 renderSidebar();
 renderMobileTabs();
 bindFilters();
 renderContent();
+
+// 10분마다 자동으로 새 데이터 폴링. 탭이 보일 때만 동작.
+setInterval(() => {
+  if (document.visibilityState === 'visible') checkForUpdates();
+}, 600000);
+// 탭이 백그라운드 → 포그라운드로 돌아올 때도 즉시 한 번 체크
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkForUpdates();
+});
 </script>
 </body>
 </html>
