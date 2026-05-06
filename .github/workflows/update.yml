@@ -2,13 +2,14 @@ name: Update Competitor News
 
 on:
   schedule:
-    # 한국 시간(KST = UTC+9) 기준 매일 6회 자동 실행
-    # 09:00 KST(00 UTC), 11:00(02), 13:00(04), 15:00(06), 17:00(08), 19:00(10)
-    - cron: '0 0,2,4,6,8,10 * * *'
+    # KST 09:07 ~ 19:07, 매시간 :07분 (cron 시간 분산으로 GitHub 부하 시간대 누락 회피)
+    # UTC 00:07 ~ 10:07 = KST 09:07 ~ 19:07
+    - cron: '7 0,1,2,3,4,5,6,7,8,9,10 * * *'
   workflow_dispatch:  # 수동 트리거 (Actions 탭의 "Run workflow" 버튼)
 
 permissions:
   contents: write
+  actions: write   # self-dispatch(workflow_dispatch API 호출)에 필요
 
 jobs:
   update:
@@ -16,6 +17,24 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect stale state (cron miss catch-up)
+        id: stale
+        run: |
+          # index.html의 마지막 commit 시각 확인 (cron 누락 감지용)
+          LAST_TS=$(git log -1 --format=%ct -- index.html 2>/dev/null || echo 0)
+          NOW_TS=$(date +%s)
+          DELTA=$((NOW_TS - LAST_TS))
+          echo "last_commit_age_minutes=$((DELTA/60))" >> $GITHUB_OUTPUT
+          # 90분 이상 갱신이 없으면 직전 cron 누락으로 간주 (정상은 60분 간격)
+          if [ "$DELTA" -gt 5400 ]; then
+            echo "was_stale=true" >> $GITHUB_OUTPUT
+            echo "::notice::index.html이 $((DELTA/60))분 동안 미갱신 — 누락된 cron catch-up 모드"
+          else
+            echo "was_stale=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -32,13 +51,25 @@ jobs:
         run: python update.py
 
       - name: Commit and push changes
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add index.html
           if git diff --cached --quiet; then
             echo "변경사항 없음 - commit 생략"
+            echo "committed=false" >> $GITHUB_OUTPUT
           else
             git commit -m "Auto-update news: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')"
             git push
+            echo "committed=true" >> $GITHUB_OUTPUT
           fi
+
+      - name: Self-dispatch (catch-up after stale period)
+        if: ${{ steps.stale.outputs.was_stale == 'true' && github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "이전 cron이 누락된 것으로 보임 — 30초 후 추가 실행 트리거"
+          sleep 30
+          gh workflow run update.yml || echo "self-dispatch 실패(무시)"
