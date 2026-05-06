@@ -303,16 +303,18 @@ def generate_companies_meta():
 def render_html(news_data, highlights, kpis, last_updated, last_updated_iso):
     with open('template.html', 'r', encoding='utf-8') as f:
         template = f.read()
+    # 클라이언트 사이드 자동 갱신(폴링)에서 재할당이 필요하므로 동적 5종은 let 사용
     template = template.replace('/*__NEWS_DATA__*/',
-        'const NEWS_DATA = ' + json.dumps(news_data, ensure_ascii=False) + ';')
+        'let NEWS_DATA = ' + json.dumps(news_data, ensure_ascii=False) + ';')
     template = template.replace('/*__HIGHLIGHTS__*/',
-        'const HIGHLIGHTS = ' + json.dumps(highlights, ensure_ascii=False) + ';')
+        'let HIGHLIGHTS = ' + json.dumps(highlights, ensure_ascii=False) + ';')
     template = template.replace('/*__KPIS__*/',
-        'const KPIS = ' + json.dumps(kpis, ensure_ascii=False) + ';')
+        'let KPIS = ' + json.dumps(kpis, ensure_ascii=False) + ';')
     template = template.replace('/*__LAST_UPDATED__*/',
-        'const LAST_UPDATED = ' + json.dumps(last_updated, ensure_ascii=False) + ';')
+        'let LAST_UPDATED = ' + json.dumps(last_updated, ensure_ascii=False) + ';')
     template = template.replace('/*__LAST_UPDATED_ISO__*/',
-        'const LAST_UPDATED_ISO = ' + json.dumps(last_updated_iso, ensure_ascii=False) + ';')
+        'let LAST_UPDATED_ISO = ' + json.dumps(last_updated_iso, ensure_ascii=False) + ';')
+    # COMPANIES 메타정보는 정적 — const 유지
     template = template.replace('/*__COMPANIES__*/',
         'const COMPANIES = ' + json.dumps(generate_companies_meta(), ensure_ascii=False) + ';')
     with open('index.html', 'w', encoding='utf-8') as f:
